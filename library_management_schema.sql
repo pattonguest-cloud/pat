@@ -430,7 +430,15 @@ CREATE TABLE fine (
     CONSTRAINT ck_fine_amount_paid_le_assessed
         CHECK (amount_paid <= amount_assessed),
     CONSTRAINT ck_fine_paid_after_assessed
-        CHECK (paid_date IS NULL OR paid_date >= assessed_date)
+        CHECK (paid_date IS NULL OR paid_date >= assessed_date),
+    -- Status/amount consistency: a fully PAID fine must have paid the full
+    -- assessed amount, and a WAIVED fine must record a written reason.
+    CONSTRAINT ck_fine_status_consistency
+        CHECK (
+            (fine_status <> 'PAID'   OR amount_paid = amount_assessed)
+            AND
+            (fine_status <> 'WAIVED' OR waiver_reason IS NOT NULL)
+        )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 -- =============================================================================

@@ -317,7 +317,10 @@ CREATE TABLE loan (
     INDEX ix_loan_due_date          (due_date),
     CONSTRAINT fk_loan_book_copy
         FOREIGN KEY (book_copy_id) REFERENCES book_copy (book_copy_id)
-        ON UPDATE CASCADE
+        -- book_copy_id is a base column of the STORED generated column
+        -- active_copy_key, so MySQL 8.0 forbids CASCADE/SET NULL/SET DEFAULT
+        -- referential actions on this FK. Use RESTRICT on both sides.
+        ON UPDATE RESTRICT
         ON DELETE RESTRICT,
     CONSTRAINT fk_loan_member
         FOREIGN KEY (member_id) REFERENCES member (member_id)
@@ -371,13 +374,16 @@ CREATE TABLE reservation (
     INDEX ix_reservation_book_id            (book_id),
     INDEX ix_reservation_member_id          (member_id),
     INDEX ix_reservation_reservation_status (reservation_status),
+    -- book_id and member_id are base columns of the STORED generated column
+    -- active_reservation_key, so MySQL 8.0 forbids CASCADE/SET NULL/SET DEFAULT
+    -- referential actions on these FKs. Use RESTRICT on both sides.
     CONSTRAINT fk_reservation_book
         FOREIGN KEY (book_id) REFERENCES book (book_id)
-        ON UPDATE CASCADE
+        ON UPDATE RESTRICT
         ON DELETE RESTRICT,
     CONSTRAINT fk_reservation_member
         FOREIGN KEY (member_id) REFERENCES member (member_id)
-        ON UPDATE CASCADE
+        ON UPDATE RESTRICT
         ON DELETE RESTRICT,
     CONSTRAINT ck_reservation_expiration
         CHECK (expiration_date >= reserve_date),

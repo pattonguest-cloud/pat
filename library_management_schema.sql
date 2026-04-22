@@ -125,6 +125,9 @@ CREATE TABLE book (
     created_at          TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT pk_book PRIMARY KEY (book_id),
     CONSTRAINT uq_book_isbn13 UNIQUE (isbn13),
+    -- Index the FK column inline so InnoDB uses this named index for the
+    -- foreign key instead of auto-creating one (prevents duplicate indexes).
+    INDEX ix_book_publisher_id (publisher_id),
     CONSTRAINT fk_book_publisher
         FOREIGN KEY (publisher_id) REFERENCES publisher (publisher_id)
         ON UPDATE CASCADE
@@ -132,9 +135,6 @@ CREATE TABLE book (
     CONSTRAINT ck_book_publication_year
         CHECK (publication_year IS NULL OR publication_year BETWEEN 1450 AND 2100)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-
--- Index to speed up listing all books from a given publisher.
-CREATE INDEX ix_book_publisher_id ON book (publisher_id);
 
 -- =============================================================================
 -- Bridge tables
@@ -153,6 +153,10 @@ CREATE TABLE book_author (
     author_id       INT         NOT NULL,
     author_order    TINYINT     NOT NULL,
     CONSTRAINT pk_book_author PRIMARY KEY (book_id, author_id),
+    -- Composite PK covers (book_id) as leading column, so fk_book_author_book
+    -- does not need an extra index. author_id is not the leading column, so
+    -- we define an explicit index (also satisfies "author -> books" lookups).
+    INDEX ix_book_author_author_id (author_id),
     CONSTRAINT fk_book_author_book
         FOREIGN KEY (book_id) REFERENCES book (book_id)
         ON UPDATE CASCADE
@@ -164,10 +168,6 @@ CREATE TABLE book_author (
     CONSTRAINT ck_book_author_order CHECK (author_order > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
--- Secondary lookup direction (author -> their books). The composite PK
--- already supports book -> authors lookups.
-CREATE INDEX ix_book_author_author_id ON book_author (author_id);
-
 -- -----------------------------------------------------------------------------
 -- Table: book_category
 -- Many-to-many bridge between book and category. A book may be classified
@@ -177,6 +177,9 @@ CREATE TABLE book_category (
     book_id     INT NOT NULL,
     category_id INT NOT NULL,
     CONSTRAINT pk_book_category PRIMARY KEY (book_id, category_id),
+    -- Leading PK column covers the book FK. category_id needs its own index
+    -- for the FK and for "list books in a category" lookups.
+    INDEX ix_book_category_category_id (category_id),
     CONSTRAINT fk_book_category_book
         FOREIGN KEY (book_id) REFERENCES book (book_id)
         ON UPDATE CASCADE
@@ -186,9 +189,6 @@ CREATE TABLE book_category (
         ON UPDATE CASCADE
         ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-
--- Secondary lookup direction (category -> all books in it).
-CREATE INDEX ix_book_category_category_id ON book_category (category_id);
 
 -- =============================================================================
 -- People tables
@@ -233,6 +233,8 @@ CREATE TABLE member (
     CONSTRAINT pk_member PRIMARY KEY (member_id),
     CONSTRAINT uq_member_university_id UNIQUE (university_id),
     CONSTRAINT uq_member_email         UNIQUE (email),
+    -- Index for the member_type FK and for tier-based joins/filters.
+    INDEX ix_member_member_type_id (member_type_id),
     CONSTRAINT fk_member_member_type
         FOREIGN KEY (member_type_id) REFERENCES member_type (member_type_id)
         ON UPDATE CASCADE
@@ -240,9 +242,6 @@ CREATE TABLE member (
     CONSTRAINT ck_member_expiration
         CHECK (expiration_date >= registration_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-
--- Speed up joins / filters by membership tier.
-CREATE INDEX ix_member_member_type_id ON member (member_type_id);
 
 -- =============================================================================
 -- Inventory tables
@@ -265,16 +264,15 @@ CREATE TABLE book_copy (
     shelf_location      VARCHAR(50)                                                 NOT NULL,
     CONSTRAINT pk_book_copy PRIMARY KEY (book_copy_id),
     CONSTRAINT uq_book_copy_barcode UNIQUE (barcode),
+    -- Supports the FK and "list all copies of this title" lookups.
+    INDEX ix_book_copy_book_id (book_id),
+    -- Dashboards / reports that group copies by status.
+    INDEX ix_book_copy_status (copy_status),
     CONSTRAINT fk_book_copy_book
         FOREIGN KEY (book_id) REFERENCES book (book_id)
         ON UPDATE CASCADE
         ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-
--- Needed for "list all copies of this title" lookups.
-CREATE INDEX ix_book_copy_book_id ON book_copy (book_id);
--- Helpful for dashboards that group copies by status.
-CREATE INDEX ix_book_copy_status  ON book_copy (copy_status);
 
 -- =============================================================================
 -- Transaction tables
@@ -308,6 +306,15 @@ CREATE TABLE loan (
             (CASE WHEN return_date IS NULL THEN book_copy_id ELSE NULL END) STORED,
     CONSTRAINT pk_loan PRIMARY KEY (loan_id),
     CONSTRAINT uq_loan_active_copy UNIQUE (active_copy_key),
+    -- FK-supporting indexes (declared inline so InnoDB does not create
+    -- duplicate auto-indexes for the foreign keys below) plus two
+    -- circulation-reporting indexes on loan_status and due_date.
+    INDEX ix_loan_book_copy_id      (book_copy_id),
+    INDEX ix_loan_member_id         (member_id),
+    INDEX ix_loan_checkout_staff_id (checkout_staff_id),
+    INDEX ix_loan_return_staff_id   (return_staff_id),
+    INDEX ix_loan_loan_status       (loan_status),
+    INDEX ix_loan_due_date          (due_date),
     CONSTRAINT fk_loan_book_copy
         FOREIGN KEY (book_copy_id) REFERENCES book_copy (book_copy_id)
         ON UPDATE CASCADE
@@ -331,14 +338,6 @@ CREATE TABLE loan (
     CONSTRAINT ck_loan_returned_has_date
         CHECK (loan_status <> 'RETURNED' OR return_date IS NOT NULL)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-
--- Circulation reporting indexes.
-CREATE INDEX ix_loan_book_copy_id       ON loan (book_copy_id);
-CREATE INDEX ix_loan_member_id          ON loan (member_id);
-CREATE INDEX ix_loan_checkout_staff_id  ON loan (checkout_staff_id);
-CREATE INDEX ix_loan_return_staff_id    ON loan (return_staff_id);
-CREATE INDEX ix_loan_loan_status        ON loan (loan_status);
-CREATE INDEX ix_loan_due_date           ON loan (due_date);
 
 -- -----------------------------------------------------------------------------
 -- Table: reservation
@@ -367,6 +366,11 @@ CREATE TABLE reservation (
                   ELSE NULL END) STORED,
     CONSTRAINT pk_reservation PRIMARY KEY (reservation_id),
     CONSTRAINT uq_reservation_active UNIQUE (active_reservation_key),
+    -- FK-supporting indexes (inline prevents duplicate auto-indexes)
+    -- plus a reporting index on reservation_status.
+    INDEX ix_reservation_book_id            (book_id),
+    INDEX ix_reservation_member_id          (member_id),
+    INDEX ix_reservation_reservation_status (reservation_status),
     CONSTRAINT fk_reservation_book
         FOREIGN KEY (book_id) REFERENCES book (book_id)
         ON UPDATE CASCADE
@@ -382,10 +386,6 @@ CREATE TABLE reservation (
     CONSTRAINT ck_reservation_queue_position
         CHECK (queue_position > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-
-CREATE INDEX ix_reservation_book_id             ON reservation (book_id);
-CREATE INDEX ix_reservation_member_id           ON reservation (member_id);
-CREATE INDEX ix_reservation_reservation_status  ON reservation (reservation_status);
 
 -- =============================================================================
 -- Financial tables
@@ -409,7 +409,10 @@ CREATE TABLE fine (
     paid_date           DATE                                            NULL,
     waiver_reason       VARCHAR(255)                                    NULL,
     CONSTRAINT pk_fine PRIMARY KEY (fine_id),
+    -- UNIQUE on loan_id already provides the index InnoDB needs for
+    -- fk_fine_loan; we deliberately do NOT create a second loan_id index.
     CONSTRAINT uq_fine_loan_id UNIQUE (loan_id),
+    INDEX ix_fine_fine_status (fine_status),
     CONSTRAINT fk_fine_loan
         FOREIGN KEY (loan_id) REFERENCES loan (loan_id)
         ON UPDATE CASCADE
@@ -423,9 +426,6 @@ CREATE TABLE fine (
     CONSTRAINT ck_fine_paid_after_assessed
         CHECK (paid_date IS NULL OR paid_date >= assessed_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-
-CREATE INDEX ix_fine_loan_id     ON fine (loan_id);
-CREATE INDEX ix_fine_fine_status ON fine (fine_status);
 
 -- =============================================================================
 -- Verification queries
